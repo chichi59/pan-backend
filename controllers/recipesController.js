@@ -11,19 +11,19 @@ const crypto = require('crypto')
 
 
 const getAllPublicRecipes = asyncHandler(async (req, res) => {
-    const userid = ''
+    let userid = ''
 
-    const recipes = []
+    let recipes = []
     if (req.hasOwnProperty('userid')) {
         userid = req.userid;
-        const user = await User.findById(userid).lean()
+        const user = await User.findById(userid).lean().exec();
 
         if (!user) {
             return res.status(400).json({ message: 'User not found' })
         }
-        recipes = await Recipe.find({ owner: { $ne: userid }, public: true }).select('_id title ingredients calories servings cooktime owner -public').lean().exec()
+        recipes = await Recipe.find({ owner: { $ne: userid }, public: true }).select('_id title ingredients calories servings cooktime owner').lean().exec();
     } else {
-        recipes = await Recipe.find({ public: true }).select('_id title ingredients calories servings cooktime owner -public').lean().exec()
+        recipes = await Recipe.find({ public: true }).select('_id title ingredients calories servings cooktime owner').lean().exec();
     }
 
 
@@ -31,35 +31,48 @@ const getAllPublicRecipes = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'No recipes found' })
     }
 
-    const ownerids = []
+    let ownerids = new Set();
 
     for (const recipe of recipes) {
-        ownerids.push(recipe.owner)
+        ownerids.add(recipe.owner);
     }
 
-    const ownerUsernames = await User.find({ _id: { $in: ownerids } }).select('_id username').exec();
+    const owners = [...ownerids];
 
-    res.json({ recipes: recipes, ownerusernames: ownerUsernames })
+    const ownerUsernames = await User.find({ _id: { $in: owners } }).select('_id username').exec();
+
+    ownerids = new Map();
+
+    for (const useritem of ownerUsernames) {
+        ownerids.set(useritem._id, useritem.username)
+    }
+
+    for (const recipe of recipes) {
+        const uname = ownerids.get(recipe.owner);
+        recipe.ownerusername = uname;
+    }
+
+    res.json(recipes)
 })
 
 const getAllPublicCoverImagesAndProfPics = asyncHandler(async (req, res) => {
-    const userid = ''
+    let userid = ''
 
-    const recipes = []
+    let recipes = []
     if (req.hasOwnProperty('userid')) {
         userid = req.userid;
-        const user = await User.findById(userid).lean()
+        const user = await User.findById(userid).lean().exec();
 
         if (!user) {
             return res.status(400).json({ message: 'User not found' })
         }
-        recipes = await Recipe.find({ owner: { $ne: userid }, public: true }).select('_id coverImages').lean().exec()
+        recipes = await Recipe.find({ owner: { $ne: userid }, public: true }).select('_id coverImages owner').lean().exec();
     } else {
-        recipes = await Recipe.find({ public: true }).select('_id coverImages').lean().exec()
+        recipes = await Recipe.find({ public: true }).select('_id coverImages owner').lean().exec();
     }
 
     const recipesImages = []
-    const ownerids = []
+    const ownerids = new Set();
     const profilepics = []
 
     if (recipes.length > 0) {
@@ -101,10 +114,12 @@ const getAllPublicCoverImagesAndProfPics = asyncHandler(async (req, res) => {
 
             recipesImages.push(imagesCover);
 
-            ownerids.push(recipe.owner);
+            ownerids.add(recipe.owner);
         }
 
-        const ownerProfilePics = await User.find({ _id: { $in: ownerids } }).select('_id profilePicture')
+        const owners = [...ownerids];
+
+        const ownerProfilePics = await User.find({ _id: { $in: owners } }).select('_id profilePicture').exec();
 
         for (const foundUser of ownerProfilePics) {
             if (!foundUser.profilePicture.imageName) {
@@ -145,7 +160,7 @@ const getMyRecipes = asyncHandler(async (req, res) => {
     const userid = req.userid
     const recipes = await Recipe.find({ owner: userid }).select('_id title ingredients calories servings cooktime').lean().exec()
 
-    res.json({ recipes: recipes })
+    res.json(recipes)
 
 })
 
@@ -199,40 +214,54 @@ const getMyCoverImages = asyncHandler(async (req, res) => {
 
 const getFollowingsPublicRecipes = asyncHandler(async (req, res) => {
     const userid = req.userid
-    const user = await User.findById(userid).lean()
+    const user = await User.findById(userid).lean().exec();
 
     if (!user) {
         return res.status(400).json({ message: 'User not found' })
     }
 
     const following = user.following
-    let usernames = []
-    let recipes = []
 
-    if(following.length > 0){
-        usernames = await User.find({ _id: { $in: following}}).select('username _id').exec();
+    const recipes = await Recipe.find({ owner: { $in: following }, public: true }).select('_id title ingredients calories servings cooktime owner').exec();
+
+    let userSet = new Set();
+
+    for (const recipe in recipes) {
+        userSet.add(recipe.owner)
     }
 
-    recipes = await Recipe.find({ owner: { $in: following}, public: true}).select('_id title ingredients calories servings cooktime owner -public').exec();
+    let users = [...userSet];
+    const usernames = await User.find({ _id: { $in: users } }).select('username _id').exec();
 
-    res.send({ownerusernames: usernames, recipes: recipes})
+    let userMap = new Map();
+
+    for (const useritem of usernames) {
+        if (!userMap.get(useritem._id)) userMap.set(useritem._id, useritem.username);
+    }
+
+    for (const recipe of recipes) {
+        recipe.ownerusername = userMap.get(recipe.owner);
+    }
+
+    res.json(recipes)
 
 })
 
 
 const getFollowingsPublicCoverImagesAndProfPics = asyncHandler(async (req, res) => {
     const userid = req.userid
-    const user = await User.findById(userid).lean()
+    const user = await User.findById(userid).lean().exec();
 
     if (!user) {
         return res.status(400).json({ message: 'User not found' })
     }
 
     const following = user.following
-    const recipes = await Recipe.find({ owner: { $in: following }, public: true }).select('coverImages _id').exec();
+    const recipes = await Recipe.find({ owner: { $in: following }, public: true }).select('coverImages owner _id').exec();
 
     const recipesImages = []
-    const profilepics = []
+    const userSet = new Set();
+    const profilepics = [];
 
     if (recipes.length > 0) {
         for (const recipe of recipes) {
@@ -269,13 +298,14 @@ const getFollowingsPublicCoverImagesAndProfPics = asyncHandler(async (req, res) 
             }
 
 
-
+            userSet.add(recipe.owner);
 
             recipesImages.push(imagesCover);
 
         }
 
-        const ownerProfilePics = await User.find({ _id: { $in: following } }).select('_id profilePicture')
+        let users = [...userSet];
+        const ownerProfilePics = await User.find({ _id: { $in: users } }).select('_id profilePicture').exec();
 
         for (const foundUser of ownerProfilePics) {
             if (!foundUser.profilePicture.imageName) {
@@ -310,36 +340,40 @@ const getFollowingsPublicCoverImagesAndProfPics = asyncHandler(async (req, res) 
 
 
 
-    
-    
+
+
 
 })
 
 const getUsersPublicRecipes = asyncHandler(async (req, res) => {
     const userid = req.params.userid;
 
-    const user = await User.findById(userid).lean()
+    const user = await User.findById(userid).lean().exec();
 
     if (!user) {
         return res.status(400).json({ message: 'User not found' })
     }
 
-    const recipes = await Recipe.find({ owner: userid, public: true }).select('_id title ingredients calories servings cooktime').lean().exec()
+    const recipes = await Recipe.find({ owner: userid, public: true }).select('_id title ingredients calories servings cooktime owner').lean().exec()
 
-    res.json({ recipes: recipes, ownerusername: user.username })
+    if(recipes.length > 0){
+        recipes[0].ownerusername = user.username;
+    }
+
+    res.json(recipes)
 
 })
 
 const getUsersPublicCoverImagesAndProfPic = asyncHandler(async (req, res) => {
     const userid = req.params.userid;
 
-    const user = await User.findById(userid).lean()
+    const user = await User.findById(userid).lean().exec();
 
     if (!user) {
         return res.status(400).json({ message: 'User not found' })
     }
 
-    const recipes = await Recipe.find({ owner: userid, public: true }).select('coverImages _id').exec()
+    const recipes = await Recipe.find({ owner: userid, public: true }).select('coverImages owner _id').exec()
 
 
     const recipesImages = []
@@ -415,23 +449,36 @@ const getMyFavoriteRecipes = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'No such user exists, cannot retrieve favorites' })
     }
 
-    const recipes = await Recipe.find({ _id: { $in: user.favorites } }).lean().exec();
+    const recipes = await Recipe.find({ _id: { $in: user.favorites } }).select('_id title ingredients calories servings cooktime owner public').lean().exec();
 
-    const ownerids = []
+    const ownerids = new Set();
 
     for (const recipe of recipes) {
         if (recipe.owner.toString() !== userid) {
             delete recipe.public
-            ownerids.push(recipe.owner)
+            ownerids.add(recipe.owner)
 
         } else {
             delete recipe.owner
         }
     }
 
-    const ownerusernames = await User.find({ _id: { $in: ownerids } }).select('_id username').lean().exec();
+    let users = [...ownerids];
+    const ownerusernames = await User.find({ _id: { $in: users } }).select('_id username').lean().exec();
 
-    res.json({ recipes: recipes, ownerusernames: ownerusernames })
+    let userMap = new Map();
+
+    for (const useritem of ownerusernames){
+        if(!userMap.get(useritem._id)) userMap.set(useritem._id, useritem.username);
+    }
+
+    for(const recipe of recipes){
+        if(recipe.hasOwnProperty('owner')){
+            recipe.ownerusername = userMap.get(recipe.owner);
+        }
+    }
+
+    res.json(recipes)
 
 })
 
@@ -447,7 +494,7 @@ const getMyFavoriteCoverImagesAndProfPics = asyncHandler(async (req, res) => {
 
 
     const recipesImages = []
-    const ownerids = []
+    const ownerids = new Set();
     const profilepics = []
 
     if (recipes.length > 0) {
@@ -487,10 +534,15 @@ const getMyFavoriteCoverImagesAndProfPics = asyncHandler(async (req, res) => {
 
             recipesImages.push(imagesCover);
 
-            ownerids.push(recipe.owner);
+            if(recipe.owner.toString() !== userid){
+                ownerids.add(recipe.owner)
+            }else{
+                delete recipe.owner
+            }
         }
 
-        const ownerProfilePics = await User.find({ _id: { $in: ownerids } }).select('_id profilePicture').exec();
+        let users = [...ownerids]
+        const ownerProfilePics = await User.find({ _id: { $in: users } }).select('_id profilePicture').exec();
 
         for (const foundUser of ownerProfilePics) {
             if (foundUser._id.toString() === userid) {
@@ -534,30 +586,42 @@ const getMyFavoriteCoverImagesAndProfPics = asyncHandler(async (req, res) => {
 const getUsersPublicFavorites = asyncHandler(async (req, res) => {
     const userid = req.params.userid;
 
-    const user = await User.findById(userid).lean()
+    const user = await User.findById(userid).lean().exec();
 
     if (!user) {
         return res.status(400).json({ message: 'User not found' })
     }
 
-    const recipes = await Recipe.find({ _id: { $in: user.favorites }, public: true }).lean().exec();
+    const recipes = await Recipe.find({ _id: { $in: user.favorites }, public: true }).select('_id title ingredients calories servings cooktime owner public').lean().exec();
 
-    const ownerids = []
+    const ownerids = new Set();
 
     for (const recipe of recipes) {
         if (recipe.owner.toString() !== userid) {
+            ownerids.add(recipe.owner)
             delete recipe.public
-            ownerids.push(recipe.owner)
 
         } else {
             delete recipe.owner
-
         }
     }
 
-    const ownerusernames = await User.find({ _id: { $in: ownerids } }).select('_id username').lean().exec();
+    let users = [...ownerids];
+    const ownerusernames = await User.find({ _id: { $in: users } }).select('_id username').lean().exec();
 
-    res.json({ recipes: recipes, ownerusernames: ownerusernames })
+    let userMap = new Map();
+
+    for (const useritem of ownerusernames){
+        if(!userMap.get(useritem._id)) userMap.set(useritem._id, useritem.username);
+    }
+
+    for(const recipe of recipes){
+        if(recipe.hasOwnProperty('owner')){
+            recipe.ownerusername = userMap.get(recipe.owner);
+        }
+    }
+
+    res.json(recipes)
 
 
 
@@ -568,17 +632,17 @@ const getUsersPublicFavorites = asyncHandler(async (req, res) => {
 const getUsersPublicFavoritesCoverImagesAndProfPics = asyncHandler(async (req, res) => {
     const userid = req.params.userid;
 
-    const user = await User.findById(userid).lean()
+    const user = await User.findById(userid).lean().exec();
 
     if (!user) {
         return res.status(400).json({ message: 'User not found' })
     }
 
-    const recipes = await Recipe.find({ _id: { $in: user.favorites }, public: true }).select('coverImages _id').exec();
+    const recipes = await Recipe.find({ _id: { $in: user.favorites }, public: true }).select('owner coverImages _id').exec();
 
 
     const recipesImages = []
-    const ownerids = []
+    const ownerids = new Set();
     const profilepics = []
 
     if (recipes.length > 0) {
@@ -620,10 +684,15 @@ const getUsersPublicFavoritesCoverImagesAndProfPics = asyncHandler(async (req, r
 
             recipesImages.push(imagesCover);
 
-            ownerids.push(recipe.owner);
+            if(recipe.owner.toString() !== userid){
+                ownerids.add(recipe.owner)
+            }else{
+                delete recipe.owner
+            }
         }
 
-        const ownerProfilePics = await User.find({ _id: { $in: ownerids } }).select('_id profilePicture')
+        let users = [...ownerids]
+        const ownerProfilePics = await User.find({ _id: { $in: users } }).select('_id profilePicture').exec();
 
         for (const foundUser of ownerProfilePics) {
             if (foundUser._id.toString() === userid) {
@@ -840,7 +909,7 @@ const deleteRecipe = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'Id required for deletion' })
     }
 
-    const recipe = await Recipe.findOne({ _id: recipeid, owner: userid })
+    const recipe = await Recipe.findOne({ _id: recipeid, owner: userid }).exec();
 
     if (!recipe) {
         return res.status(400).json({ message: 'Recipe not found' })
@@ -878,7 +947,7 @@ const deleteRecipe = asyncHandler(async (req, res) => {
             {},
             { $pull: { favorites: mongoose.Types.ObjectId(recipeid) } })
     } else {
-        const user = await User.findById(userid);
+        const user = await User.findById(userid).exec();
         if (!user) {
             return res.status(400).json({ message: 'Owner of recipe not found' })
 
@@ -906,7 +975,7 @@ const getRecipe = asyncHandler(async (req, res) => {
 
     const recipeid = req.params.id;
 
-    const recipe = await Recipe.findById(recipeid).lean()
+    const recipe = await Recipe.findById(recipeid).lean().exec()
 
     if (!recipe) {
         return res.status(400).json({ message: 'No recipes found' })
@@ -935,7 +1004,7 @@ const getStepImages = asyncHandler(async (req, res) => {
     const recipeid = req.params.id;
     const userid = req.userid;
 
-    const recipe = await Recipe.findById(recipeid).lean()
+    const recipe = await Recipe.findById(recipeid).exec();
 
     if (!recipe) {
         return res.status(400).json({ message: 'Recipe not found' })
@@ -947,9 +1016,12 @@ const getStepImages = asyncHandler(async (req, res) => {
 
     const imagesStep = []
 
+    let updated = false;
+
     if (recipe.stepImages.length > 0) {
         for (const item of recipe.stepImages) {
             if (!item.imageURL || isExpired(item.imageURL)) {
+                updated = true;
                 const getObjectParams = {
                     Bucket: bucketName,
                     Key: item.imageName
@@ -965,6 +1037,10 @@ const getStepImages = asyncHandler(async (req, res) => {
             imagesStep.push(item)
 
         }
+
+        if (updated) {
+            await recipe.save();
+        }
     }
 
     res.json({
@@ -979,7 +1055,7 @@ const getCoverImages = asyncHandler(async (req, res) => {
     const userid = req.userid;
     const recipeid = req.params.id;
 
-    const recipe = await Recipe.findById(recipeid).lean()
+    const recipe = await Recipe.findById(recipeid).exec();
 
     if (!recipe) {
         return res.status(400).json({ message: 'Recipe not found' })
@@ -1226,7 +1302,7 @@ module.exports = {
     getUsersPublicCoverImagesAndProfPic,
     getUsersPublicFavorites,
     getUsersPublicFavoritesCoverImagesAndProfPics,
-    getFollowingsPublicRecipes, 
+    getFollowingsPublicRecipes,
     getFollowingsPublicCoverImagesAndProfPics,
     createNewRecipe,
     createImageLists,

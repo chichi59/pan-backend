@@ -14,13 +14,23 @@ const getAllPublicRecipes = asyncHandler(async (req, res) => {
     let userid = ''
 
     let recipes = []
+    let favoriteids = new Set();
+
     if (req.hasOwnProperty('userid')) {
         userid = req.userid;
         const user = await User.findById(userid).lean().exec();
-
+    
         if (!user) {
             return res.status(400).json({ message: 'User not found' })
         }
+        
+        if (user.favorites) {
+            for (const faveid of user.favorites) {
+                favoriteids.add(faveid.toString())
+            }
+        }
+
+
         recipes = await Recipe.find({ owner: { $ne: userid }, public: true }).select('_id title ingredients calories servings cooktime owner').lean().exec();
     } else {
         recipes = await Recipe.find({ public: true }).select('_id title ingredients calories servings cooktime owner').lean().exec();
@@ -39,18 +49,24 @@ const getAllPublicRecipes = asyncHandler(async (req, res) => {
 
     const owners = [...ownerids];
 
-    const ownerUsernames = await User.find({ _id: { $in: owners } }).select('_id username').exec();
+    const ownerUsernames = owners.length > 0 ? await User.find({ _id: { $in: owners } }).select('_id username').exec() : [];
 
     ownerids = new Map();
 
     for (const useritem of ownerUsernames) {
-        ownerids.set(useritem._id, useritem.username)
+        ownerids.set(useritem._id.toString(), useritem.username)
+        
     }
 
+
     for (const recipe of recipes) {
-        const uname = ownerids.get(recipe.owner);
+        if (userid) {
+            recipe.favorite = favoriteids.has(recipe._id.toString()) ? true : false;
+        }
+        const uname = ownerids.get(recipe.owner.toString());
         recipe.ownerusername = uname;
     }
+
 
     res.json(recipes)
 })
@@ -66,9 +82,9 @@ const getAllPublicCoverImagesAndProfPics = asyncHandler(async (req, res) => {
         if (!user) {
             return res.status(400).json({ message: 'User not found' })
         }
-        recipes = await Recipe.find({ owner: { $ne: userid }, public: true }).select('_id coverImages owner').lean().exec();
+        recipes = await Recipe.find({ owner: { $ne: userid }, public: true }).select('_id coverImages owner').exec();
     } else {
-        recipes = await Recipe.find({ public: true }).select('_id coverImages owner').lean().exec();
+        recipes = await Recipe.find({ public: true }).select('_id coverImages owner').exec();
     }
 
     const recipesImages = []
@@ -84,7 +100,8 @@ const getAllPublicCoverImagesAndProfPics = asyncHandler(async (req, res) => {
                 coverImages: []
             }
 
-            if (recipe.coverImages.length > 0) {
+
+            if (recipe.coverImages) {
                 for (const item of recipe.coverImages) {
                     if (!item.imageURL || isExpired(item.imageURL)) {
                         updated = true;
@@ -119,36 +136,38 @@ const getAllPublicCoverImagesAndProfPics = asyncHandler(async (req, res) => {
 
         const owners = [...ownerids];
 
-        const ownerProfilePics = await User.find({ _id: { $in: owners } }).select('_id profilePicture').exec();
+        const ownerProfilePics = owners.length > 0 ? await User.find({ _id: { $in: owners } }).select('_id profilePicture').exec() : [];
 
         for (const foundUser of ownerProfilePics) {
-            if (!foundUser.profilePicture.imageName) {
+            if (!foundUser.profilePicture || !foundUser.profilePicture.imageName) {
                 profilepics.push({ imageURL: '', id: foundUser._id })
-            } else {
-                if (!foundUser.profilePicture.imageURL || isExpired(foundUser.profilePicture.imageURL)) {
-                    const getObjectParams = {
-                        Bucket: bucketName,
-                        Key: foundUser.profilePicture.imageName
-                    }
+                continue
+            }
 
-                    const command = new GetObjectCommand(getObjectParams);
-
-                    const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
-
-                    foundUser.profilePicture.imageURL = url;
-
-                    profilepics.push({ imageURL: url, id: foundUser._id })
-
-
-                    await foundUser.save();
-
-
-                } else {
-                    profilepics.push({ imageURL: foundUser.profilePicture.imageURL, id: foundUser._id })
+            if (!foundUser.profilePicture.imageURL || isExpired(foundUser.profilePicture.imageURL)) {
+                const getObjectParams = {
+                    Bucket: bucketName,
+                    Key: foundUser.profilePicture.imageName
                 }
+
+                const command = new GetObjectCommand(getObjectParams);
+
+                const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
+
+                foundUser.profilePicture.imageURL = url;
+
+                profilepics.push({ imageURL: url, id: foundUser._id })
+
+
+                await foundUser.save();
+
+
+            } else {
+                profilepics.push({ imageURL: foundUser.profilePicture.imageURL, id: foundUser._id })
             }
         }
     }
+
 
     res.json({ coverIms: recipesImages, profilePics: profilepics });
 
@@ -158,7 +177,7 @@ const getAllPublicCoverImagesAndProfPics = asyncHandler(async (req, res) => {
 
 const getMyRecipes = asyncHandler(async (req, res) => {
     const userid = req.userid
-    const recipes = await Recipe.find({ owner: userid }).select('_id title ingredients calories servings cooktime').lean().exec()
+    const recipes = await Recipe.find({ owner: userid }).select('_id title ingredients calories servings cooktime public').lean().exec()
 
     res.json(recipes)
 
@@ -178,7 +197,7 @@ const getMyCoverImages = asyncHandler(async (req, res) => {
                 coverImages: []
             }
             let updated = false;
-            if (recipe.coverImages.length > 0) {
+            if (recipe.coverImages) {
                 for (const item of recipe.coverImages) {
                     if (!item.imageURL || isExpired(item.imageURL)) {
                         updated = true;
@@ -220,28 +239,42 @@ const getFollowingsPublicRecipes = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'User not found' })
     }
 
+    let favoriteids = new Set();
+
+    if (user.favorites) {
+        for (const faveid of user.favorites) {
+            favoriteids.add(faveid.toString())
+        }
+    }
+
+
     const following = user.following
 
-    const recipes = await Recipe.find({ owner: { $in: following }, public: true }).select('_id title ingredients calories servings cooktime owner').exec();
+    const recipes = following ? await Recipe.find({ owner: { $in: following }, public: true }).select('_id title ingredients calories servings cooktime owner').lean().exec() : []
 
     let userSet = new Set();
 
-    for (const recipe in recipes) {
+    for (const recipe of recipes) {
         userSet.add(recipe.owner)
     }
 
     let users = [...userSet];
-    const usernames = await User.find({ _id: { $in: users } }).select('username _id').exec();
+    const usernames = users.length > 0 ? await User.find({ _id: { $in: users } }).select('username _id').exec() : [];
+
 
     let userMap = new Map();
 
     for (const useritem of usernames) {
-        if (!userMap.get(useritem._id)) userMap.set(useritem._id, useritem.username);
+        if (!userMap.get(useritem._id.toString())) userMap.set(useritem._id.toString(), useritem.username);
     }
 
+
     for (const recipe of recipes) {
-        recipe.ownerusername = userMap.get(recipe.owner);
+        recipe.ownerusername = userMap.get(recipe.owner.toString());
+        recipe.favorite = favoriteids.has(recipe._id.toString()) ? true : false;
     }
+
+
 
     res.json(recipes)
 
@@ -257,7 +290,7 @@ const getFollowingsPublicCoverImagesAndProfPics = asyncHandler(async (req, res) 
     }
 
     const following = user.following
-    const recipes = await Recipe.find({ owner: { $in: following }, public: true }).select('coverImages owner _id').exec();
+    const recipes = following ? await Recipe.find({ owner: { $in: following }, public: true }).select('coverImages owner _id').exec() : [];
 
     const recipesImages = []
     const userSet = new Set();
@@ -272,7 +305,7 @@ const getFollowingsPublicCoverImagesAndProfPics = asyncHandler(async (req, res) 
                 coverImages: []
             }
 
-            if (recipe.coverImages.length > 0) {
+            if (recipe.coverImages) {
                 for (const item of recipe.coverImages) {
                     if (!item.imageURL || isExpired(item.imageURL)) {
                         updated = true;
@@ -305,34 +338,36 @@ const getFollowingsPublicCoverImagesAndProfPics = asyncHandler(async (req, res) 
         }
 
         let users = [...userSet];
-        const ownerProfilePics = await User.find({ _id: { $in: users } }).select('_id profilePicture').exec();
+        const ownerProfilePics = users.length > 0 ? await User.find({ _id: { $in: users } }).select('_id profilePicture').exec() : [];
 
         for (const foundUser of ownerProfilePics) {
-            if (!foundUser.profilePicture.imageName) {
+            if (!foundUser.profilePicture || !foundUser.profilePicture.imageName) {
                 profilepics.push({ imageURL: '', id: foundUser._id })
-            } else {
-                if (!foundUser.profilePicture.imageURL || isExpired(foundUser.profilePicture.imageURL)) {
-                    const getObjectParams = {
-                        Bucket: bucketName,
-                        Key: foundUser.profilePicture.imageName
-                    }
-
-                    const command = new GetObjectCommand(getObjectParams);
-
-                    const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
-
-                    foundUser.profilePicture.imageURL = url;
-
-                    profilepics.push({ imageURL: url, id: foundUser._id })
-
-
-                    await foundUser.save();
-
-
-                } else {
-                    profilepics.push({ imageURL: foundUser.profilePicture.imageURL, id: foundUser._id })
-                }
+                continue
             }
+
+            if (!foundUser.profilePicture.imageURL || isExpired(foundUser.profilePicture.imageURL)) {
+                const getObjectParams = {
+                    Bucket: bucketName,
+                    Key: foundUser.profilePicture.imageName
+                }
+
+                const command = new GetObjectCommand(getObjectParams);
+
+                const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
+
+                foundUser.profilePicture.imageURL = url;
+
+                profilepics.push({ imageURL: url, id: foundUser._id })
+
+
+                await foundUser.save();
+
+
+            } else {
+                profilepics.push({ imageURL: foundUser.profilePicture.imageURL, id: foundUser._id })
+            }
+
         }
     }
 
@@ -354,10 +389,34 @@ const getUsersPublicRecipes = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'User not found' })
     }
 
-    const recipes = await Recipe.find({ owner: userid, public: true }).select('_id title ingredients calories servings cooktime owner').lean().exec()
+    const loggedin = req.hasOwnProperty('userid')
+    let recipes = []
+    if (loggedin && req.userid === userid) {
+        recipes = await Recipe.find({ owner: userid, public: true }).select('_id title ingredients calories servings cooktime public').lean().exec()
+    } else {
+        recipes = await Recipe.find({ owner: userid, public: true }).select('_id title ingredients calories servings cooktime owner').lean().exec()
+    }
 
-    if(recipes.length > 0){
-        recipes[0].ownerusername = user.username;
+    let favoriteids = new Set();
+
+    if (loggedin) {
+        const requser = await User.findById(req.userid).lean().exec();
+
+        if (requser.favorites) {
+            for (const faveid of requser.favorites) {
+                favoriteids.add(faveid.toString())
+            }
+        }
+    }
+
+    for (const recipe of recipes) {
+        if(recipe.owner){
+            recipe.ownerusername = user.username;
+        }
+        if (loggedin) {
+            recipe.favorite = favoriteids.has(recipe._id.toString()) ? true : false;
+        }
+
     }
 
     res.json(recipes)
@@ -367,7 +426,7 @@ const getUsersPublicRecipes = asyncHandler(async (req, res) => {
 const getUsersPublicCoverImagesAndProfPic = asyncHandler(async (req, res) => {
     const userid = req.params.userid;
 
-    const user = await User.findById(userid).lean().exec();
+    const user = await User.findById(userid).exec();
 
     if (!user) {
         return res.status(400).json({ message: 'User not found' })
@@ -387,7 +446,7 @@ const getUsersPublicCoverImagesAndProfPic = asyncHandler(async (req, res) => {
 
             let updated = false;
 
-            if (recipe.coverImages.length > 0) {
+            if (recipe.coverImages) {
                 for (const item of recipe.coverImages) {
                     if (!item.imageURL || isExpired(item.imageURL)) {
                         updated = true;
@@ -415,22 +474,26 @@ const getUsersPublicCoverImagesAndProfPic = asyncHandler(async (req, res) => {
         }
     }
 
-    const profilepic = ''
+    let profilepic = ''
 
-    if (user.profilePic.imageName && (!user.profilePicture.imageURL || isExpired(user.profilePicture.imageURL))) {
-        const getObjectParams = {
-            Bucket: bucketName,
-            Key: user.profilePicture.imageName
+    if (user.profilePicture && user.profilePicture.imageName) {
+        if (!user.profilePicture.imageURL || isExpired(user.profilePicture.imageURL)) {
+            const getObjectParams = {
+                Bucket: bucketName,
+                Key: user.profilePicture.imageName
+            }
+
+            const command = new GetObjectCommand(getObjectParams);
+
+            const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
+
+            user.profilePicture.imageURL = url;
+            profilepic = url;
+
+            await user.save();
+        } else {
+            profilepic = user.profilePicture.imageURL
         }
-
-        const command = new GetObjectCommand(getObjectParams);
-
-        const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
-
-        user.profilePicture.imageURL = url;
-        profilepic = url;
-
-        await user.save();
     }
 
 
@@ -449,7 +512,7 @@ const getMyFavoriteRecipes = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'No such user exists, cannot retrieve favorites' })
     }
 
-    const recipes = await Recipe.find({ _id: { $in: user.favorites } }).select('_id title ingredients calories servings cooktime owner public').lean().exec();
+    const recipes = user.favorites ? await Recipe.find({ _id: { $in: user.favorites } }).select('_id title ingredients calories servings cooktime owner public').lean().exec() : [];
 
     const ownerids = new Set();
 
@@ -464,17 +527,17 @@ const getMyFavoriteRecipes = asyncHandler(async (req, res) => {
     }
 
     let users = [...ownerids];
-    const ownerusernames = await User.find({ _id: { $in: users } }).select('_id username').lean().exec();
+    const ownerusernames = users.length > 0 ? await User.find({ _id: { $in: users } }).select('_id username').lean().exec() : [];
 
     let userMap = new Map();
 
-    for (const useritem of ownerusernames){
-        if(!userMap.get(useritem._id)) userMap.set(useritem._id, useritem.username);
+    for (const useritem of ownerusernames) {
+        if (!userMap.get(useritem._id.toString())) userMap.set(useritem._id.toString(), useritem.username);
     }
 
-    for(const recipe of recipes){
-        if(recipe.hasOwnProperty('owner')){
-            recipe.ownerusername = userMap.get(recipe.owner);
+    for (const recipe of recipes) {
+        if (recipe.owner) {
+            recipe.ownerusername = userMap.get(recipe.owner.toString());
         }
     }
 
@@ -490,7 +553,7 @@ const getMyFavoriteCoverImagesAndProfPics = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'No such user exists, cannot retrieve favorites' })
     }
 
-    const recipes = await Recipe.find({ _id: { $in: user.favorites } }).select('coverImages owner _id').exec();
+    const recipes = user.favorites ? await Recipe.find({ _id: { $in: user.favorites } }).select('coverImages owner _id').exec() : [];
 
 
     const recipesImages = []
@@ -506,7 +569,7 @@ const getMyFavoriteCoverImagesAndProfPics = asyncHandler(async (req, res) => {
                 coverImages: []
             }
 
-            if (recipe.coverImages.length > 0) {
+            if (recipe.coverImages) {
                 for (const item of recipe.coverImages) {
                     if (!item.imageURL || isExpired(item.imageURL)) {
                         updated = true;
@@ -534,45 +597,47 @@ const getMyFavoriteCoverImagesAndProfPics = asyncHandler(async (req, res) => {
 
             recipesImages.push(imagesCover);
 
-            if(recipe.owner.toString() !== userid){
+            if (recipe.owner.toString() !== userid) {
                 ownerids.add(recipe.owner)
-            }else{
+            } else {
                 delete recipe.owner
             }
         }
 
         let users = [...ownerids]
-        const ownerProfilePics = await User.find({ _id: { $in: users } }).select('_id profilePicture').exec();
+        const ownerProfilePics = users.length > 0 ? await User.find({ _id: { $in: users } }).select('_id profilePicture').exec() : [];
 
         for (const foundUser of ownerProfilePics) {
             if (foundUser._id.toString() === userid) {
                 continue;
             }
-            if (!foundUser.profilePicture.imageName) {
+            if (!foundUser.profilePicture || !foundUser.profilePicture.imageName) {
                 profilepics.push({ imageURL: '', id: foundUser._id })
-            } else {
-                if (!foundUser.profilePicture.imageURL || isExpired(foundUser.profilePicture.imageURL)) {
-                    const getObjectParams = {
-                        Bucket: bucketName,
-                        Key: foundUser.profilePicture.imageName
-                    }
-
-                    const command = new GetObjectCommand(getObjectParams);
-
-                    const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
-
-                    foundUser.profilePicture.imageURL = url;
-
-                    profilepics.push({ imageURL: url, id: foundUser._id })
-
-
-                    await foundUser.save();
-
-
-                } else {
-                    profilepics.push({ imageURL: foundUser.profilePicture.imageURL, id: foundUser._id })
-                }
+                continue;
             }
+
+            if (!foundUser.profilePicture.imageURL || isExpired(foundUser.profilePicture.imageURL)) {
+                const getObjectParams = {
+                    Bucket: bucketName,
+                    Key: foundUser.profilePicture.imageName
+                }
+
+                const command = new GetObjectCommand(getObjectParams);
+
+                const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
+
+                foundUser.profilePicture.imageURL = url;
+
+                profilepics.push({ imageURL: url, id: foundUser._id })
+
+
+                await foundUser.save();
+
+
+            } else {
+                profilepics.push({ imageURL: foundUser.profilePicture.imageURL, id: foundUser._id })
+            }
+
         }
 
     }
@@ -592,38 +657,56 @@ const getUsersPublicFavorites = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'User not found' })
     }
 
-    const recipes = await Recipe.find({ _id: { $in: user.favorites }, public: true }).select('_id title ingredients calories servings cooktime owner public').lean().exec();
+    const loggedin = req.hasOwnProperty('userid')
 
+    let recipes = user.favorites ? await Recipe.find({ _id: { $in: user.favorites }, public: true }).select('_id title ingredients calories servings cooktime owner public').lean().exec() : [];
+
+    let favoriteids = new Set();
+
+    if (loggedin) {
+        const requser = await User.findById(req.userid).lean().exec();
+
+        if (requser.favorites) {
+            for (const faveid of requser.favorites) {
+                favoriteids.add(faveid.toString())
+            }
+        }
+
+    }
     const ownerids = new Set();
 
     for (const recipe of recipes) {
-        if (recipe.owner.toString() !== userid) {
+        if(loggedin && recipe.owner.toString() === req.userid){
+            delete recipe.owner
+        }else{
             ownerids.add(recipe.owner)
             delete recipe.public
-
-        } else {
-            delete recipe.owner
         }
     }
 
     let users = [...ownerids];
-    const ownerusernames = await User.find({ _id: { $in: users } }).select('_id username').lean().exec();
+    const ownerusernames = users.length > 0 ? await User.find({ _id: { $in: users } }).select('_id username').lean().exec() : [];
 
     let userMap = new Map();
 
-    for (const useritem of ownerusernames){
-        if(!userMap.get(useritem._id)) userMap.set(useritem._id, useritem.username);
+    for (const useritem of ownerusernames) {
+        if (!userMap.get(useritem._id.toString())) userMap.set(useritem._id.toString(), useritem.username);
     }
 
-    for(const recipe of recipes){
-        if(recipe.hasOwnProperty('owner')){
-            recipe.ownerusername = userMap.get(recipe.owner);
+
+
+    for (const recipe of recipes) {
+        if (recipe.owner) {
+            recipe.ownerusername = userMap.get(recipe.owner.toString());
+        }
+
+        if (loggedin) {
+            recipe.favorite = favoriteids.has(recipe._id.toString()) ? true : false;
         }
     }
 
+
     res.json(recipes)
-
-
 
 
 })
@@ -638,7 +721,7 @@ const getUsersPublicFavoritesCoverImagesAndProfPics = asyncHandler(async (req, r
         return res.status(400).json({ message: 'User not found' })
     }
 
-    const recipes = await Recipe.find({ _id: { $in: user.favorites }, public: true }).select('owner coverImages _id').exec();
+    const recipes = user.favorites ? await Recipe.find({ _id: { $in: user.favorites }, public: true }).select('owner coverImages _id').exec() : [];
 
 
     const recipesImages = []
@@ -654,7 +737,7 @@ const getUsersPublicFavoritesCoverImagesAndProfPics = asyncHandler(async (req, r
                 coverImages: []
             }
 
-            if (recipe.coverImages.length > 0) {
+            if (recipe.coverImages) {
                 for (const item of recipe.coverImages) {
                     if (!item.imageURL || isExpired(item.imageURL)) {
                         updated = true;
@@ -684,45 +767,45 @@ const getUsersPublicFavoritesCoverImagesAndProfPics = asyncHandler(async (req, r
 
             recipesImages.push(imagesCover);
 
-            if(recipe.owner.toString() !== userid){
+            if (recipe.owner.toString() !== userid) {
                 ownerids.add(recipe.owner)
-            }else{
+            } else {
+                ownerids.add(recipe.owner)
                 delete recipe.owner
             }
         }
 
         let users = [...ownerids]
+        
         const ownerProfilePics = await User.find({ _id: { $in: users } }).select('_id profilePicture').exec();
 
         for (const foundUser of ownerProfilePics) {
-            if (foundUser._id.toString() === userid) {
+            if (!foundUser.profilePicture || !foundUser.profilePicture.imageName) {
+                profilepics.push({ imageURL: '', id: foundUser._id })
                 continue;
             }
-            if (!foundUser.profilePicture.imageName) {
-                profilepics.push({ imageURL: '', id: foundUser._id })
-            } else {
-                if (!foundUser.profilePicture.imageURL || isExpired(foundUser.profilePicture.imageURL)) {
-                    const getObjectParams = {
-                        Bucket: bucketName,
-                        Key: foundUser.profilePicture.imageName
-                    }
-
-                    const command = new GetObjectCommand(getObjectParams);
-
-                    const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
-
-                    foundUser.profilePicture.imageURL = url;
-
-                    profilepics.push({ imageURL: url, id: foundUser._id })
-
-
-                    await foundUser.save();
-
-
-                } else {
-                    profilepics.push({ imageURL: foundUser.profilePicture.imageURL, id: foundUser._id })
+            if (!foundUser.profilePicture.imageURL || isExpired(foundUser.profilePicture.imageURL)) {
+                const getObjectParams = {
+                    Bucket: bucketName,
+                    Key: foundUser.profilePicture.imageName
                 }
+
+                const command = new GetObjectCommand(getObjectParams);
+
+                const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
+
+                foundUser.profilePicture.imageURL = url;
+
+                profilepics.push({ imageURL: url, id: foundUser._id })
+
+
+                await foundUser.save();
+
+
+            } else {
+                profilepics.push({ imageURL: foundUser.profilePicture.imageURL, id: foundUser._id })
             }
+
         }
     }
 
@@ -915,7 +998,7 @@ const deleteRecipe = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'Recipe not found' })
     }
 
-    if (recipe.coverImages.length > 0) {
+    if (recipe.coverImages) {
         for (item of recipe.coverImages) {
             const params = {
                 Bucket: bucketName,
@@ -927,7 +1010,7 @@ const deleteRecipe = asyncHandler(async (req, res) => {
         }
     }
 
-    if (recipe.stepImages.length > 0) {
+    if (recipe.stepImages > 0) {
         for (item of recipe.stepImages) {
             const params = {
                 Bucket: bucketName,
@@ -981,9 +1064,16 @@ const getRecipe = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'No recipes found' })
     }
 
-    const username = userid !== recipe.owner.toString() ? await User.findById(recipe.owner).select('username').exec() : '';
+    const username = userid !== recipe.owner.toString() ? await User.findById(recipe.owner).select('username _id').exec() : '';
 
-    res.json({ recipe: recipe, ownerusername: username })
+    if (username) {
+        recipe.ownerusername = username.username
+        delete recipe.public
+    } else {
+        delete recipe.owner
+    }
+
+    res.json(recipe)
 })
 
 
@@ -1018,7 +1108,7 @@ const getStepImages = asyncHandler(async (req, res) => {
 
     let updated = false;
 
-    if (recipe.stepImages.length > 0) {
+    if (recipe.stepImages) {
         for (const item of recipe.stepImages) {
             if (!item.imageURL || isExpired(item.imageURL)) {
                 updated = true;
@@ -1045,7 +1135,7 @@ const getStepImages = asyncHandler(async (req, res) => {
 
     res.json({
         stepIms: imagesStep,
-        stepListLength: recipe.steps.length
+        stepListLength: recipe.steps ? recipe.steps.length : 0
     })
 
 })
@@ -1062,9 +1152,9 @@ const getCoverImages = asyncHandler(async (req, res) => {
     }
 
     const imagesCover = []
-    const profilepic = 'myrecipe'
+    let profilepic = ''
 
-    if (recipe.coverImages.length > 0) {
+    if (recipe.coverImages) {
         let updated = false;
         for (const item of recipe.coverImages) {
             if (!item.imageURL || isExpired(item.imageURL)) {
@@ -1076,7 +1166,7 @@ const getCoverImages = asyncHandler(async (req, res) => {
 
                 const command = new GetObjectCommand(getObjectParams);
 
-                const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
+                let url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
 
                 item.imageURL = url;
             }
@@ -1091,7 +1181,7 @@ const getCoverImages = asyncHandler(async (req, res) => {
         if (userid !== recipe.owner.toString()) {
             const user = await User.findById(recipe.owner).select('profilePicture _id').exec();
 
-            if (user.profilePic.imageName && (!user.profilePicture.imageURL || isExpired(user.profilePicture.imageURL))) {
+            if (user.profilePicture.imageName && (!user.profilePicture.imageURL || isExpired(user.profilePicture.imageURL))) {
                 const getObjectParams = {
                     Bucket: bucketName,
                     Key: user.profilePicture.imageName
@@ -1099,15 +1189,15 @@ const getCoverImages = asyncHandler(async (req, res) => {
 
                 const command = new GetObjectCommand(getObjectParams);
 
-                const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
+                let url1 = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
 
-                user.profilePicture.imageURL = url;
-                profilepic = url;
+                user.profilePicture.imageURL = url1;
+
 
                 await user.save();
-            } else {
-                profilepic = ''
             }
+
+            profilepic = user.profilePicture.imageURL
         }
     }
 
@@ -1137,7 +1227,7 @@ const updateImageLists = asyncHandler(async (req, res) => {
     const coverImMap = new Map();
     const newCoverImages = []
 
-    if (recipe.coverImages.length > 0) {
+    if (recipe.coverImages) {
         for (const image of recipe.coverImages) {
             coverImMap.set(image.imageName, image.imageURL);
         }
@@ -1206,7 +1296,7 @@ const updateImageLists = asyncHandler(async (req, res) => {
     const stepImMap = new Map();
     const newStepImages = []
 
-    if (recipe.stepImages.length > 0) {
+    if (recipe.stepImages) {
         for (const image of recipe.stepImages) {
             stepImMap.set(image.imageName, image.imageURL);
         }

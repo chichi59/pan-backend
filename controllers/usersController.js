@@ -6,6 +6,9 @@ const { use } = require('../routes/root.js')
 const { s3, PutObjectCommand, bucketName, GetObjectCommand, DeleteObjectCommand, getSignedUrl } = require('../config/s3');
 const { parseISO, addSeconds } = require('date-fns');
 const { getUsersPublicRecipes } = require('./recipesController.js')
+const { mongo } = require('mongoose')
+const crypto = require('crypto')
+
 
 
 // Get all users
@@ -13,7 +16,7 @@ const { getUsersPublicRecipes } = require('./recipesController.js')
 // Private
 
 const getAllUsers = asyncHandler(async (req, res) => {
-    const users = await User.find().select('-password -refreshToken').lean()
+    const users = await User.find().select('-password -refreshToken').lean().exec();
     if (!users?.length) {
         return res.status(400).json({ message: 'No users found' })
     }
@@ -21,10 +24,10 @@ const getAllUsers = asyncHandler(async (req, res) => {
     res.json(users)
 })
 
-const getAUser = asyncHandler(async (req, res) => {
+const getMe = asyncHandler(async (req, res) => {
     const userid = req.userid
 
-    const user = await User.findById(userid).select('-password -refreshToken').lean()
+    const user = await User.findById(userid).select('-password -refreshToken').lean().exec();
     if (!user) {
         return res.status(400).json({ message: 'No users found' })
     }
@@ -32,18 +35,109 @@ const getAUser = asyncHandler(async (req, res) => {
     res.json(user)
 })
 
+const getFollowing = asyncHandler(async (req, res) => {
+    const userid = req.userid
+
+    const user = await User.findById(userid).select('-password -refreshToken').exec();
+
+    if (!user) {
+        return res.status(400).json({ message: 'No users found' })
+    }
+
+    let followersDetails = []
+
+
+    if (user.following) {
+
+        const users = await User.find({ _id: { $in: user.following } }).select('_id username profilePicture').exec();
+
+        for (const userfollow of users) {
+
+            const userdeets = {
+                id: userfollow._id,
+                username: userfollow.username
+            }
+
+
+            if (!userfollow.profilePicture || !userfollow.profilePicture.imageName) {
+                userdeets.imageURL = ''
+                followersDetails.push(userdeets)
+                continue;
+            }
+
+            if (!userfollow.profilePicture.imageURL || isExpired(userfollow.profilePicture.imageURL)) {
+                const getObjectParams = {
+                    Bucket: bucketName,
+                    Key: userfollow.profilePicture.imageName
+                }
+
+                const command = new GetObjectCommand(getObjectParams);
+
+                const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
+
+                userfollow.profilePicture.imageURL = url;
+
+                userdeets.imageURL = url;
+                await userfollow.save();
+            } else {
+                userdeets.imageURL = userfollow.profilePicture.imageURL
+            }
+
+            followersDetails.push(userdeets)
+        }
+
+    }
+
+    res.send(followersDetails);
+})
+
+
+const getUser = asyncHandler(async (req, res) => {
+    const userid = req.params.id;
+
+    const user = await User.findById(userid).select('-password -refreshToken').lean().exec();
+    if (!user) {
+        return res.status(400).json({ message: 'No users found' })
+    }
+
+    if (req.hasOwnProperty('userid')) {
+        const me = await User.findById(req.userid).select('following _id').lean().exec();
+
+        if (me.following) {
+            for (const id of me.following) {
+                if (id.toString() === userid) {
+                    user.followed = true;
+                    break;
+                }
+            }
+
+            if (!user.followed) {
+                user.followed = false
+            }
+        }
+
+        if (me._id.toString() === userid) {
+            user.me = true;
+        }
+
+    }
+
+    res.json(user)
+
+})
+
 // Create new user
 //POST /users
 //Private
 
 
-function isExpired(url){
+function isExpired(url) {
     const params = new Proxy(new URLSearchParams(url), {
         get: (searchParams, prop) => searchParams.get(prop),
     });
     const creationDate = parseISO(params['X-Amz-Date']);
     const expiresInSecs = Number(params['X-Amz-Expires']);
-    
+
     const expiryDate = addSeconds(creationDate, expiresInSecs);
 
     return expiryDate < new Date();
@@ -77,7 +171,7 @@ const createNewUser = asyncHandler(async (req, res) => {
 })
 
 const getProfilePic = asyncHandler(async (req, res) => {
-    const { userid } = req.body
+    const userid = req.params.id
 
     if (!userid) {
         return res.status(400).json({ message: 'Userid required' })
@@ -91,7 +185,12 @@ const getProfilePic = asyncHandler(async (req, res) => {
 
     let imageurl = ''
 
-    if(!user.profilePicture.imageURL || isExpired(user.profilePicture.imageURL)){
+
+    if (!user.profilePicture || !user.profilePicture.imageName) {
+        return res.send({ imageURL: imageurl });
+    }
+
+    if (!user.profilePicture.imageURL || isExpired(user.profilePicture.imageURL)) {
         const getObjectParams = {
             Bucket: bucketName,
             Key: user.profilePicture.imageName
@@ -99,16 +198,18 @@ const getProfilePic = asyncHandler(async (req, res) => {
 
         const command = new GetObjectCommand(getObjectParams);
 
-        const url = await getSignedUrl(s3, command, {expiresIn: 3600 }) //expires in an hour
+        const url = await getSignedUrl(s3, command, { expiresIn: 3600 }) //expires in an hour
 
         user.profilePicture.imageURL = url;
 
         imageurl = url;
 
         await user.save();
+    }else{
+        imageurl = user.profilePicture.imageURL;
     }
 
-    res.send({imageURL: imageurl});
+    res.send({ imageURL: imageurl });
 
 })
 
@@ -165,12 +266,12 @@ const updateUser = asyncHandler(async (req, res) => {
         }
     }
 
-    if(following){
+    if (following) {
         if (user.following.includes(following)) {
             const mod = user.following.filter((item) => item.toString() !== following);
             user.following = mod;
         } else {
-            if(following !== userid){
+            if (following !== userid) {
                 const mod = [...user.following, following]
                 user.following = mod;
             }
@@ -223,7 +324,7 @@ const createProfilePic = asyncHandler(async (req, res) => {
 
     await user.save()
 
-    res.send({message: "Profile picture uploaded"})
+    res.send({ message: "Profile picture uploaded" })
 
 
 })
@@ -245,36 +346,35 @@ const updateProfilePic = asyncHandler(async (req, res) => {
 
     const imageName = user.profilePicture.imageName
 
-    if(!file && imageName){
+    if (!file && imageName) {
         //delete file
 
-        
         const params = {
             Bucket: bucketName,
             Key: imageName,
         }
-    
-        const command = new DeleteObjectCommand(params);
-    
-        await s3.send(command);
-    
 
-        user.profilePicture.imageName = ''
-        user.profilePicture.imageURL = ''
+        const command = new DeleteObjectCommand(params);
+
+        await s3.send(command);
+
+
+        user.profilePicture = undefined;
 
         await user.save();
 
         res.send({})
     }
 
-    else if (file && imageName){
+    else if (file && imageName) {
+        //replace file
         const paramsdelete = {
             Bucket: bucketName,
             Key: imageName,
         }
-    
+
         const command = new DeleteObjectCommand(paramsdelete);
-    
+
         await s3.send(command);
 
         const newImageName = crypto.randomBytes(32).toString('hex')
@@ -298,41 +398,9 @@ const updateProfilePic = asyncHandler(async (req, res) => {
         user.profilePicture = profilePic;
 
         await user.save()
-    
+
         res.send({})
     }
-
-    else if(file && !imageName){
-        const newImageName = crypto.randomBytes(32).toString('hex')
-
-        const paramsnew = {
-            Bucket: bucketName,
-            Key: newImageName,
-            Body: file.buffer,
-            ContentType: file.mimetype
-        }
-
-        const command2 = new PutObjectCommand(paramsnew);
-
-        await s3.send(command2);
-
-        let profilePic = {
-            imageName: imageName,
-            imageURL: ''
-        }
-
-        user.profilePicture = profilePic;
-
-        await user.save()
-    
-        res.send({})
-
-    }
-    
-
-
-
-
 
 })
 
@@ -350,21 +418,32 @@ const deleteUser = asyncHandler(async (req, res) => {
         return res.status(400).json({ message: 'User ID required' })
     }
 
-    const recipe = await Recipe.findOne({ user: userid }).lean().exec()
-
-    if (recipe) {
-        return res.status(400).json({ message: 'User has active recipes ' })
-    }
-
     const user = await User.findById(userid).exec()
+
     if (!user) {
         return res.status(400).json({ message: 'User not found' })
     }
 
+    const recipes = await Recipe.find({owner: userid}).select('_id').exec();
+
+    const ids = recipes.map((item) => item._id);
+
+    await User.updateMany(
+        {},
+        { $pull: { following: mongoose.Types.ObjectId(userid) } })
+    
+    await User.updateMany(
+        {},
+        { $pull: {favorites: {$in: ids}}})
+    
+
+    await Recipe.deleteMany({_id: {$in : ids}}).exec();
+
     const result = await user.deleteOne()
 
     const reply = `Username ${result.username} with id ${result._id} deleted`
-
+    
+    res.clearCookie('jwt', {httpOnly: true, sameSite: 'None', secure: true})
     res.json({ message: reply })
 })
 
@@ -374,10 +453,12 @@ const deleteUser = asyncHandler(async (req, res) => {
 
 module.exports = {
     getAllUsers,
-    getAUser,
+    getMe,
+    getUser,
+    getFollowing,
     getProfilePic,
     createNewUser,
-    createProfilePic, 
+    createProfilePic,
     updateProfilePic,
     updateUser,
     deleteUser

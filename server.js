@@ -37,6 +37,8 @@ app.use('/auth', require('./routes/authRoutes.js'))
 
 app.use('/recipes', require('./routes/recipeRoutes.js') )
 
+app.use('/search', require('./routes/searchRoutes.js'))
+
 app.all('*', (req,res) => {
     res.status(404)
     if(req.accepts('html')){

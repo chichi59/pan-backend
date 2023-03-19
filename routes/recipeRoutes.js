@@ -6,35 +6,36 @@ const upload = require('../middleware/multer');
 
 
 
-router.route('/')
-    .get(recipesController.getAllPublicRecipes)
-
-router.route('/images')
-    .get(recipesController.getAllPublicCoverImagesAndProfPics)
-
-router.route('/user/:userid/')
-    .get(recipesController.getUsersPublicRecipes)
-
-router.route('/user/:userid/coverimages')
-    .get(recipesController.getUsersPublicCoverImagesAndProfPic)
-
-router.route('/user/:userid/favorites')
-    .get(recipesController.getUsersPublicFavorites)
-
-router.route('/user/:userid/favorites/coverimages')
-    .get(recipesController.getUsersPublicFavoritesCoverImagesAndProfPics)
-
-
-
-
-
-router.use(verifyJWT)
-
 router.route('/explore')
     .get(recipesController.getAllPublicRecipes)
 
 router.route('/explore/images')
     .get(recipesController.getAllPublicCoverImagesAndProfPics)
+
+router.route('/explore/user/:userid/')
+    .get(recipesController.getUsersPublicRecipes)
+
+router.route('/explore/user/:userid/coverimages')
+    .get(recipesController.getUsersPublicCoverImagesAndProfPic)
+
+router.route('/explore/user/:userid/favorites')
+    .get(recipesController.getUsersPublicFavorites)
+
+router.route('/explore/user/:userid/favorites/coverimages')
+    .get(recipesController.getUsersPublicFavoritesCoverImagesAndProfPics)
+
+    
+
+router.use(verifyJWT)
+
+router.route('/')
+    .get(recipesController.getAllPublicRecipes)
+
+router.route('/user/:userid/')
+    .get(recipesController.getUsersPublicRecipes)
+
+router.route('/user/:userid/favorites')
+    .get(recipesController.getUsersPublicFavorites)
 
 router.route('/myrecipes')
     .get(recipesController.getMyRecipes)
@@ -51,6 +52,11 @@ router.route('/myrecipes/favorites')
 router.route('/myrecipes/favorites/coverimages')
     .get(recipesController.getMyFavoriteCoverImagesAndProfPics)
 
+router.route('/following')
+    .get(recipesController.getFollowingsPublicRecipes)
+
+router.route('/following/images')
+    .get(recipesController.getFollowingsPublicCoverImagesAndProfPics)
 
 router.route('/:id')
     .get(recipesController.getRecipe)
